@@ -1,0 +1,6 @@
+.state/
+root.json
+endpoints.env
+out/
+tuf-cache/
+*.log

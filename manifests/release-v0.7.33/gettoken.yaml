@@ -1,0 +1,32 @@
+# gettoken: 从 Pod 投影的 ServiceAccount token 读取 JWT 并原样返回。
+# 来源：sigstore/scaffolding v0.7.33 的 testdata/config/gettoken/gettoken.yaml
+# （从上游 testrelease.yaml 中抽取，仅保留该 Service，避免带入 sign/verify 测试 Job）。
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: gettoken
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/initial-scale: "1"
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      containers:
+        - name: gettoken
+          image: ghcr.io/sigstore/scaffolding/getoidctoken@sha256:9dc67833c6def413494d910cf7acd44e3a21b1074fc104e6b2d2f0350f4578c0
+          env:
+            - name: OIDC_FILE
+              value: /var/run/sigstore/cosign/oidc-token
+          volumeMounts:
+            - name: oidc-info
+              mountPath: /var/run/sigstore/cosign
+      volumes:
+        - name: oidc-info
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: oidc-token
+                  expirationSeconds: 600
+                  audience: sigstore

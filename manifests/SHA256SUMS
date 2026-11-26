@@ -1,0 +1,11 @@
+708af939f6d94c06d4b3784186d4abd065e57201048a9cd63961d19ffe959247  release-v0.7.33/gettoken.yaml
+ce21875ddc5d5d384424e455259331f3e8db877ccd0309952d1239ebeb471cc2  release-v0.7.33/release-ctlog.yaml
+0a7ecda1e8dbd97a29024e052d0bfd934342e9a9cdb567ae45383a53342cf8c5  release-v0.7.33/release-fulcio.yaml
+221cc7ba21bb16d75f9e391fba9a644760d708caa152d905fabb57e8c97d085e  release-v0.7.33/release-rekor.yaml
+d6bc73536ac33e0b04160c8c6e643191999741e2400df06c13c586547fc50afb  release-v0.7.33/release-trillian.yaml
+cb31f4085186418b9ba3a413ff489997b2e90aa2f2abe47bb4a6329b7ecd2b12  release-v0.7.33/release-tsa.yaml
+bf36e7cf035336580fc8151248bef72ee3d47571e0ee917c2cca1e9011b94eff  release-v0.7.33/release-tuf.yaml
+88c3e1bd121d72bb0b48b8af84823d19a7264dd452add250decb779eac904eae  knative-v1.18.0/kourier.yaml
+31efc2679ae8d59f3f76fc88e63b741080fed73cb749bb717a1a1f0023dfd26a  knative-v1.18.0/serving-core.yaml
+11ab6420f5999700407645403805f72622e204fedf543ce4c2b5069d1df2a09b  knative-v1.18.0/serving-crds.yaml
+a001a4221c16ebde99161ffb21e483ded8657cdff6739c3ce7cbd9e8f70ad179  kind-config.yaml

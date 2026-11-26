@@ -1,0 +1,220 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: ctlog-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: ctlog-system
+  name: secret-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["configmaps"]
+    resourceNames: ["ctlog-config"]
+    verbs: ["get", "update"]
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-operator
+  namespace: ctlog-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-operator
+subjects:
+  - kind: ServiceAccount
+    name: createctconfig
+    namespace: ctlog-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ctlog-config
+  namespace: ctlog-system
+data:
+  __placeholder: |
+    ###################################################################
+    # Just a placeholder so that reapplying this won't overwrite treeID
+    # if it already exists. This caused grief, do not remove.
+    ###################################################################
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createctconfig
+  namespace: ctlog-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createctconfig
+  namespace: ctlog-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance. Also with activeDeadlineSeconds we're
+  # capping this to 5 minutes.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createctconfig
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createctconfig
+          image: ghcr.io/sigstore/scaffolding/createctconfig@sha256:e591f98e3899aa86772a2b033d4a0353ba99db2d17d684970731fb6f829456b6
+          args: ["--configmap=ctlog-config", "--secret=ctlog-secret"]
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: ctlog-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: ctlog-system
+  name: cm-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["configmaps"]
+    resourceNames: ["ctlog-config"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: role-cm-updater
+  namespace: ctlog-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cm-operator
+subjects:
+  - kind: ServiceAccount
+    name: createtree
+    namespace: ctlog-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ctlog-config
+  namespace: ctlog-system
+data:
+  __placeholder: |
+    ###################################################################
+    # Just a placeholder so that reapplying this won't overwrite treeID
+    # if it already exists. This caused grief, do not remove.
+    ###################################################################
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createtree
+  namespace: ctlog-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createtree
+  namespace: ctlog-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance. Also with activeDeadlineSeconds we're
+  # capping this to 5 minutes.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createtree
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createtree
+          image: ghcr.io/sigstore/scaffolding/createtree@sha256:4c845ced03d86217e61652659d0b9718771eb15265d8251173c94c388f0d0aad
+          args: ["--namespace=ctlog-system", "--configmap=ctlog-config", "--display_name=ctlogtree"]
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: ctlog-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ctlog-config
+  namespace: ctlog-system
+data:
+  __placeholder: |
+    ###################################################################
+    # Just a placeholder so that reapplying this won't overwrite treeID
+    # if it already exists. This caused grief, do not remove.
+    ###################################################################
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ctlog
+  namespace: ctlog-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ctlog
+  namespace: ctlog-system
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  namespace: ctlog-system
+  name: ctlog
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      serviceAccountName: ctlog
+      containers:
+        - name: ctfe
+          image: ghcr.io/sigstore/scaffolding/ct_server@sha256:24293fa1ed5083412e2a8ad4a97c6c2318b3f414fea64c054d0b5b95e39e3233
+          args: ["--http_endpoint=0.0.0.0:6962", "--log_config=/ctfe-keys/config", "--alsologtostderr"]
+          volumeMounts:
+            - name: keys
+              mountPath: "/ctfe-keys"
+              readOnly: true
+          ports:
+            - containerPort: 6962
+      volumes:
+        - name: keys
+          secret:
+            secretName: ctlog-secret
+
+---

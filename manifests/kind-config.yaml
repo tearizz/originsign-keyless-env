@@ -1,0 +1,28 @@
+# KinD 集群配置（2 节点，固定 K8s 1.32.8 镜像）。
+#
+# 关键点：kubeadm patch 把 ServiceAccount token 的 issuer 固定为
+# https://kubernetes.default.svc.cluster.local，并开启 OIDC 发现端点所需的
+# apiserver 参数。Fulcio 的 kubernetes issuer 会按这个 issuer 校验 gettoken
+# 返回的 JWT；如果 issuer 不匹配，keyless 发证会失败。
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.32.8@sha256:abd489f042d2b644e2d033f5c2d900bc707798d075e8186cb65e3f1367a9d5a1
+  - role: worker
+    image: kindest/node:v1.32.8@sha256:abd489f042d2b644e2d033f5c2d900bc707798d075e8186cb65e3f1367a9d5a1
+kubeadmConfigPatches:
+  - |
+    apiVersion: kubeadm.k8s.io/v1beta2
+    kind: ClusterConfiguration
+    metadata:
+      name: config
+    apiServer:
+      extraArgs:
+        service-account-issuer: https://kubernetes.default.svc.cluster.local
+        service-account-key-file: /etc/kubernetes/pki/sa.pub
+        service-account-signing-key-file: /etc/kubernetes/pki/sa.key
+        service-account-api-audiences: api,spire-server
+        service-account-jwks-uri: https://kubernetes.default.svc/openid/v1/jwks
+    networking:
+      dnsDomain: cluster.local

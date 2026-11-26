@@ -1,0 +1,295 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: fulcio-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: fulcio-system
+  name: secret-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-operator
+  namespace: fulcio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-operator
+subjects:
+  - kind: ServiceAccount
+    name: createcerts
+    namespace: fulcio-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createcerts
+  namespace: fulcio-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createcerts
+  namespace: fulcio-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance. Also with activeDeadlineSeconds we're
+  # capping this to 5 minutes.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createcerts
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createcerts
+          image: ghcr.io/sigstore/scaffolding/createcerts@sha256:4d64dac937e26251327f91a26e188131fc8e9f75ee49bd698d662a3c1bf0d19c
+          args: ["--secret=fulcio-secret"]
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: fulcio-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fulcio-config
+  namespace: fulcio-system
+data:
+  config.yaml: |-
+    define:
+      - github-workflow
+    oidc-issuers:
+      https://kubernetes.default.svc.cluster.local:
+        issuer-url: https://kubernetes.default.svc.cluster.local
+        client-id: sigstore
+        type: kubernetes
+      https://accounts.google.com:
+        issuer-url: https://accounts.google.com
+        client-id: sigstore
+        type: email
+      https://oauth2.sigstore.dev/auth:
+        issuer-url: https://oauth2.sigstore.dev/auth
+        client-id: sigstore
+        type: email
+        issuer-claim: $.federated_claims.connector_id
+      https://token.actions.githubusercontent.com:
+        ci-provider: github-workflow
+        issuer-url: https://token.actions.githubusercontent.com
+        client-id: sigstore
+        type: ci-provider
+    meta-issuers:
+      https://kubernetes.*.svc:
+        client-id: sigstore
+        type: kubernetes
+    ci-issuer-metadata:
+      github-workflow:
+        default-template-values:
+          # url: URL of issuer, https://github.com
+          url: "https://github.com"
+        extension-templates:
+          # event_name: Event that triggered this workflow run. E.g "push", "tag"
+          github-workflow-trigger: "event_name"
+          # sha: Commit SHA being built
+          github-workflow-sha: "sha"
+          # workflow (Deprecated): Name of workflow that is running (mutable)
+          github-workflow-name: "workflow"
+          # repository: Name of repository being built
+          github-workflow-repository: "repository"
+          # ref: Git ref being built
+          github-workflow-ref: "ref"
+          # job_workflow_ref: Specific build instructions (i.e. reusable workflow)
+          build-signer-uri: "{{ .url }}/{{ .job_workflow_ref }}"
+          # job_workflow_sha: Commit SHA to specific build instructions
+          build-signer-digest: "job_workflow_sha"
+          # runner_environment: Whether the build took place in cloud or self-hosted infrastructure
+          runner-environment: "runner_environment"
+          # repository: Name of repository being built
+          source-repository-uri: "{{ .url }}/{{ .repository }}"
+          source-repository-digest: "sha"
+          source-repository-ref: "ref"
+          # repository_id: ID to the source repo
+          source-repository-identifier: "repository_id"
+          # repository_owner: Owner of the source repo (mutable)
+          source-repository-owner-uri: "{{ .url }}/{{ .repository_owner }}"
+          # repository_owner_id: ID of the source repo
+          source-repository-owner-identifier: "repository_owner_id"
+          # workflow_ref: Ref of top-level workflow that is running
+          build-config-uri: "{{ .url }}/{{ .workflow_ref }}"
+          # workflow_sha: Commit SHA of top-level workflow that is running
+          build-config-digest: "workflow_sha"
+          build-trigger: "event_name"
+          # run_id: ID of workflow run
+          # run_attempt: Attempt number of workflow run
+          run-invocation-uri: "{{ .url }}/{{ .repository }}/actions/runs/{{ .run_id }}/attempts/{{ .run_attempt }}"
+          # repository_visibility: Visibility of the source repo
+          source-repository-visibility-at-signing: "repository_visibility"
+        subject-alternative-name-template: "{{ .url }}/{{ .job_workflow_ref }}"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fulcio
+  namespace: fulcio-system
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  namespace: fulcio-system
+  name: fulcio
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      serviceAccountName: fulcio
+      # This doesn't actually use Kubernetes credentials, so don't mount them in.
+      automountServiceAccountToken: false
+      containers:
+        - image: gcr.io/projectsigstore/fulcio:v1.8.3@sha256:77d7b72e47d80466ec38aeacc58667b2c3da22eab230330baf7d5e24a33a2197
+          name: fulcio
+          ports:
+            - containerPort: 5555
+          args:
+            - "serve"
+            - "--port=5555"
+            - "--ca=fileca"
+            - "--fileca-key"
+            - "/var/run/fulcio-secrets/key.pem"
+            - "--fileca-cert"
+            - "/var/run/fulcio-secrets/cert.pem"
+            - "--fileca-key-passwd"
+            - "$(PASSWORD)"
+            - "--ct-log-url=http://ctlog.ctlog-system.svc/sigstorescaffolding"
+          env:
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fulcio-secret
+                  key: password
+            # Force a native go address resolution.
+            - name: GODEBUG
+              value: "netdns=go"
+          volumeMounts:
+            - name: fulcio-config
+              mountPath: /etc/fulcio-config
+            - name: oidc-info
+              mountPath: /var/run/fulcio
+            - name: fulcio-cert
+              mountPath: "/var/run/fulcio-secrets"
+              readOnly: true
+      volumes:
+        - name: fulcio-config
+          configMap:
+            name: fulcio-config
+        - name: fulcio-cert
+          secret:
+            secretName: fulcio-secret
+            items:
+              - key: private
+                path: key.pem
+              - key: cert
+                path: cert.pem
+        - name: oidc-info
+          projected:
+            sources:
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+                      mode: 0666
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  namespace: fulcio-system
+  name: fulcio-grpc
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      serviceAccountName: fulcio
+      # This doesn't actually use Kubernetes credentials, so don't mount them in.
+      automountServiceAccountToken: false
+      containers:
+        - image: gcr.io/projectsigstore/fulcio:v1.8.3@sha256:77d7b72e47d80466ec38aeacc58667b2c3da22eab230330baf7d5e24a33a2197
+          name: fulcio-grpc
+          ports:
+            - containerPort: 5554
+          args:
+            - "serve"
+            - "--grpc-port=5554"
+            - "--ca=fileca"
+            - "--fileca-key"
+            - "/var/run/fulcio-secrets/key.pem"
+            - "--fileca-cert"
+            - "/var/run/fulcio-secrets/cert.pem"
+            - "--fileca-key-passwd"
+            - "$(PASSWORD)"
+            - "--ct-log-url=http://ctlog.ctlog-system.svc/sigstorescaffolding"
+          env:
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fulcio-secret
+                  key: password
+            # Force a native go address resolution.
+            - name: GODEBUG
+              value: "netdns=go"
+          volumeMounts:
+            - name: fulcio-config
+              mountPath: /etc/fulcio-config
+            - name: oidc-info
+              mountPath: /var/run/fulcio
+            - name: fulcio-cert
+              mountPath: "/var/run/fulcio-secrets"
+              readOnly: true
+      volumes:
+        - name: fulcio-config
+          configMap:
+            name: fulcio-config
+        - name: fulcio-cert
+          secret:
+            secretName: fulcio-secret
+            items:
+              - key: private
+                path: key.pem
+              - key: cert
+                path: cert.pem
+        - name: oidc-info
+          projected:
+            sources:
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+                      mode: 0666
+
+---

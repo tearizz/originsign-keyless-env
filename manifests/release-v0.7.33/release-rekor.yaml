@@ -1,0 +1,231 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: rekor-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rekor-system
+  name: secret-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: role-secret-operator
+  namespace: rekor-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-operator
+subjects:
+  - kind: ServiceAccount
+    name: createsecret
+    namespace: rekor-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createsecret
+  namespace: rekor-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createsecret
+  namespace: rekor-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createsecret
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createsecret
+          image: ghcr.io/sigstore/scaffolding/rekor-createsecret@sha256:01bfe9860cc4acb8ff189111dfa277a4e1d918042c35ddbaf8c3a00f31bec82e
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: rekor-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rekor-system
+  name: cm-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["configmaps"]
+    resourceNames: ["rekor-config"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: role-cm-updater
+  namespace: rekor-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cm-operator
+subjects:
+  - kind: ServiceAccount
+    name: createtree
+    namespace: rekor-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rekor-config
+  namespace: rekor-system
+data:
+  __placeholder: |
+    ###################################################################
+    # Just a placeholder so that reapplying this won't overwrite treeID
+    # if it already exists. This caused grief, do not remove.
+    ###################################################################
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createtree
+  namespace: rekor-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createtree
+  namespace: rekor-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance. Also with activeDeadlineSeconds we're
+  # capping this to 5 minutes.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createtree
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createtree
+          image: ghcr.io/sigstore/scaffolding/createtree@sha256:4c845ced03d86217e61652659d0b9718771eb15265d8251173c94c388f0d0aad
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: rekor-system
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: rekor-system
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+  clusterIP: None
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis
+  namespace: rekor-system
+  labels:
+    app: redis
+spec:
+  containers:
+    - image: docker.io/redis:6.2
+      name: redis
+      args: ["--bind", "0.0.0.0", "--appendonly", "yes"]
+      ports:
+        - containerPort: 6379
+          name: redis
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: rekor-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rekor
+  namespace: rekor-system
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  namespace: rekor-system
+  name: rekor
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      serviceAccountName: rekor
+      containers:
+        - name: rekor
+          image: gcr.io/projectsigstore/rekor-server:v1.4.3@sha256:934250bb8ee753c991f99e4d516117f3e7bac8b7c3c45c06b143e455e73ae0ae
+          ports:
+            - containerPort: 3000
+          args: ["serve", "--trillian_log_server.address=log-server.trillian-system.svc", "--trillian_log_server.port=80", "--rekor_server.address=0.0.0.0", "--redis_server.address=redis.rekor-system.svc", "--redis_server.port=6379", "--enable_retrieve_api=true", "--trillian_log_server.tlog_id=$(TREE_ID)", "--log_type=prod", "--rekor_server.signer=/var/run/rekor-secrets/signing-secret", "--rekor_server.signer-passwd=$(SECRET_SIGNING_PWD)", "--enable_attestation_storage=true", "--attestation_storage_bucket=file:///tmp/", "--search_index.mysql.conn_max_idletime=300s", "--search_index.mysql.conn_max_lifetime=2100s", "--search_index.mysql.max_open_connections=300", "--search_index.mysql.max_idle_connections=100"]
+          #          "--rekor_server.timestamp_chain=$(TIMESTAMP_CHAIN)"
+
+          env:
+            - name: TREE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: rekor-config
+                  key: treeID
+            - name: SECRET_SIGNING_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: rekor-signing-secret
+                  key: signing-secret-password
+          volumeMounts:
+            - name: rekor-secrets
+              mountPath: "/var/run/rekor-secrets"
+              readOnly: true
+      volumes:
+        - name: rekor-secrets
+          secret:
+            secretName: rekor-signing-secret
+            items:
+              - key: signing-secret
+                path: signing-secret
+
+---

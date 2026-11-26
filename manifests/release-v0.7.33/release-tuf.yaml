@@ -1,0 +1,136 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: tuf-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: tuf-system
+  name: secret-operator
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-operator
+  namespace: tuf-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-operator
+subjects:
+  - kind: ServiceAccount
+    name: createsecret
+    namespace: tuf-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: createsecret
+  namespace: tuf-system
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: createsecret
+  namespace: tuf-system
+spec:
+  # This number looks crazy, but on k8s 1.23 there does not seem to be
+  # exponential backoff, so just keep on trying. For any other version
+  # won't run this far by any chance. Also with activeDeadlineSeconds we're
+  # capping this to 5 minutes.
+  backoffLimit: 90
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: createsecret
+      restartPolicy: Never
+      automountServiceAccountToken: true
+      containers:
+        - name: createsecret
+          image: ghcr.io/sigstore/scaffolding/createsecret@sha256:5c37ec15ee6f6299c46fd72f8836b78fe0a96804464baf77a674040a8f4901b2
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: tuf-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: tuf-system
+  name: tuf
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tuf
+  namespace: tuf-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tuf
+subjects:
+  - kind: ServiceAccount
+    name: tuf
+    namespace: tuf-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tuf
+  namespace: tuf-system
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  namespace: tuf-system
+  name: tuf
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      serviceAccountName: tuf
+      containers:
+        - image: ghcr.io/sigstore/scaffolding/server@sha256:6f6e8f6551f8a7a50403a4a7acc060e0f95c3a84b02acf6da0d940e2ded73fed
+          name: tuf
+          args: ["--file-dir=/var/run/tuf-secrets"]
+          ports:
+            - containerPort: 8080 # tuf remote repo service
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: tuf-secrets
+              mountPath: "/var/run/tuf-secrets"
+              readOnly: true
+      volumes:
+        - name: tuf-secrets
+          secret:
+            secretName: tuf-secrets
+
+---
